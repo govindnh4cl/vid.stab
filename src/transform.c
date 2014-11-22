@@ -187,7 +187,7 @@ int vsTransformFinish(VSTransformData* td){
 }
 
 
-VSTransform vsGetNextTransform(const VSTransformData* td, VSTransformations* trans){
+VSTransform vsGetNextTransform(const VSTransformData* td, VSTransformationsContainer* trans){
   if(trans->len <=0 ) return null_transform();
   if (trans->current >= trans->len) {
     trans->current = trans->len;
@@ -200,14 +200,14 @@ VSTransform vsGetNextTransform(const VSTransformData* td, VSTransformations* tra
   return trans->ts[trans->current-1];
 }
 
-void vsTransformationsInit(VSTransformations* trans){
+void vsTransformationsInit(VSTransformationsContainer* trans){
   trans->ts = 0;
   trans->len = 0;
   trans->current = 0;
   trans->warned_end = 0;
 }
 
-void vsTransformationsCleanup(VSTransformations* trans){
+void vsTransformationsCleanup(VSTransformationsContainer* trans){
   if (trans->ts) {
     vs_free(trans->ts);
     trans->ts = NULL;
@@ -219,88 +219,209 @@ void vsTransformationsCleanup(VSTransformations* trans){
  *  This is actually the core algorithm for canceling the jiggle in the
  *  movie. We have different implementations which are patched here.
  */
-int cameraPathOptimization(VSTransformData* td, VSTransformations* trans){
-  switch(td->conf.camPathAlgo){
-   case VSAvg: return cameraPathAvg(td,trans);
-   case VSOptimalL1: // not yet implenented
-   case VSGaussian: return cameraPathGaussian(td,trans);
-//   case VSOptimalL1: return cameraPathOptimalL1(td,trans);
-  }
-  return VS_ERROR;
+int cameraPathOptimization(VSTransformData* td,
+		VSTransformationsContainer* trans) {
+	switch (td->conf.camPathAlgo) {
+	case VSAvg:
+//		fprintf(stderr, "Doing AVG transform\n");
+		return cameraPathAvg(td, trans);
+		break;
+
+	case VSOptimalL1: // not yet implenented
+	case VSGaussian:
+//		fprintf(stderr, "Doing Gaussian transform\n");
+		return cameraPathGaussian(td, trans);
+		break;
+
+	}
+	return VS_ERROR;
 }
 
 /*
  *  We perform a low-pass filter on the camera path.
- *  This supports slow camera movemen, but in a smooth fasion.
+ *  This supports slow camera movement, but in a smooth fashion.
  *  Here we use gaussian filter (gaussian kernel) lowpass filter
  */
-int cameraPathGaussian(VSTransformData* td, VSTransformations* trans){
-  VSTransform* ts = trans->ts;
-  if (trans->len < 1)
-    return VS_ERROR;
-  if (td->conf.verbose & VS_DEBUG) {
-    vs_log_msg(td->conf.modName, "Preprocess transforms:");
-  }
+// TODO [DEBUGGING] Camera path smoothing
+int cameraPathGaussian(VSTransformData* td, VSTransformationsContainer* transformsContainer) {
 
-  /* relative to absolute (integrate transformations) */
-  if (td->conf.relative) {
-    VSTransform t = ts[0];
-    for (int i = 1; i < trans->len; i++) {
-      ts[i] = add_transforms(&ts[i], &t);
-      t = ts[i];
-    }
-  }
+	VSTransform* transforms = transformsContainer->ts;
+	if (transformsContainer->len < 1)
+		return VS_ERROR;
+	if (td->conf.verbose & VS_DEBUG) {
+		vs_log_msg(td->conf.modName, "Preprocess transforms:");
+	}
 
-  if (td->conf.smoothing>0) {
-    VSTransform* ts2 = vs_malloc(sizeof(VSTransform) * trans->len);
-    memcpy(ts2, ts, sizeof(VSTransform) * trans->len);
-    int s = td->conf.smoothing * 2 + 1;
-    VSArray kernel = vs_array_new(s);
-    // initialize gaussian kernel
-    int mu        = td->conf.smoothing;
-    double sigma2 = sqr(mu/2.0);
-    for(int i=0; i<=mu; i++){
-      kernel.dat[i] = kernel.dat[s-i-1] = exp(-sqr(i-mu)/sigma2);
-    }
-    // vs_array_print(kernel, stdout);
 
-    for (int i = 0; i < trans->len; i++) {
-      // make a convolution:
-      double weightsum=0;
-      VSTransform avg = null_transform();
-      for(int k=0; k<s; k++){
-        int idx = i+k-mu;
-        if(idx>=0 && idx<trans->len){
-          if(unlikely(0 && ts2[idx].extra==1)){ // deal with scene cuts or bad frames
-            if(k<mu) { // in the past of our frame: ignore everthing before
-              avg=null_transform();
-              weightsum=0;
-              continue;
-            }else{           //current frame or in future: stop here
-              if(k==mu)      //for current frame: ignore completely
-                weightsum=0;
-              break;
-            }
-          }
-          weightsum+=kernel.dat[k];
-          avg=add_transforms_(avg, mult_transform(&ts2[idx], kernel.dat[k]));
-        }
-      }
-      if(weightsum>0){
-        avg = mult_transform(&avg, 1.0/weightsum);
+	/* relative to absolute (integrate transformations) */
+	// TODO The difference between absolute and relative isn't quite clear.
+	if (td->conf.relative) {
+		VSTransform t = transforms[0];
+		for (int i = 1; i < transformsContainer->len; i++) {
+			transforms[i] = add_transforms(&transforms[i], &t);
+			t = transforms[i];
+		}
+	}
 
-        // high frequency must be transformed away
-        ts[i] = sub_transforms(&ts[i], &avg);
-      }
-      if (td->conf.verbose & VS_DEBUG) {
-        vs_log_msg(td->conf.modName,
-                   " avg: %5lf, %5lf, %5lf extra: %i weightsum %5lf",
-                   avg.x, avg.y, avg.alpha, ts[i].extra, weightsum
-                  );
-      }
-    }
-  }
-  return VS_OK;
+	if (td->conf.smoothing > 0) {
+		//=-- Create copy of transforms container to work with
+		VSTransform* transformsContainerCopy = vs_malloc(
+				sizeof(VSTransform) * transformsContainer->len);
+		memcpy(transformsContainerCopy, transforms, sizeof(VSTransform) * transformsContainer->len);
+
+		//=-- TODO [CUSTOM] Set all transforms for frames with extra == 1 to linear difference between previous good and next good frame
+		VSTransform* transformPointer;
+		VSTransform* nextTransformPointer;
+		VSTransform* endTransformPointer;
+		VSTransform* startTransformPointer = &transforms[0];
+		for (int i = 1; i < transformsContainer->len; i++) {
+			if (i!=0) {
+				startTransformPointer = &transforms[i-1];
+			}
+			transformPointer = &transforms[i];
+			if (transformPointer->extra == 1) {
+				//=-- Retrieve end transForm and distance
+				int consecutiveBadFrames = 1;
+				endTransformPointer = transformPointer;
+				int MAX_BAD_CONSECUTIVE_FRAMES_CORRECTION = 5;
+
+				while (consecutiveBadFrames < MAX_BAD_CONSECUTIVE_FRAMES_CORRECTION && consecutiveBadFrames + i < transformsContainer->len) {
+					int index = i+consecutiveBadFrames;
+					nextTransformPointer = &transforms[index];
+					endTransformPointer = nextTransformPointer;
+
+					//=-- Stop if we find a good end frame
+					if (endTransformPointer->extra !=1 ) {
+						break;
+					}
+					consecutiveBadFrames++;
+				}
+
+				//=-- Only process if a good end frame was found
+				if (endTransformPointer->extra !=1 ) {
+					//=-- Calculate transform delta between good frames
+					VSTransform deltaTransform;
+					memcpy(&deltaTransform, endTransformPointer,sizeof(VSTransform));
+					deltaTransform = sub_transforms(&deltaTransform, startTransformPointer);
+
+	//				fprintf(stderr,"Start: [%i] - x:%5lf y:%5lf r:%5lf e:%i \n",i, startTransformPointer->x,startTransformPointer->y, startTransformPointer->rotate, startTransformPointer->extra);
+	//				fprintf(stderr,"End: [%i] - x:%5lf y:%5lf r:%5lf e:%i \n",i, endTransformPointer->x,endTransformPointer->y, endTransformPointer->rotate, endTransformPointer->extra);
+	//				fprintf(stderr,"Delta: [%i] - x:%5lf y:%5lf r:%5lf e:%i \n",i, deltaTransform.x,deltaTransform.y, deltaTransform.rotate, deltaTransform.extra);
+
+					//=-- Update intermediate transforms
+					int relativeIndex = 1;
+					while (relativeIndex <= consecutiveBadFrames) {
+						int currentIndex = i+relativeIndex-1;
+//						fprintf(stderr,"Previous: [%i] - x:%5lf y:%5lf r:%5lf z:%5lf\n",i, transformPointer->x,transformPointer->y, transformPointer->rotate, transformPointer->zoom);
+
+						double multFactor = 0.5;
+						VSTransform multTransform = mult_transform(&deltaTransform, multFactor);
+						transforms[currentIndex] = add_transforms(startTransformPointer, &multTransform);
+						transformPointer = &transforms[currentIndex];
+						transformPointer->extra = 0;
+
+//						transformPointer->x = startTransformPointer->x + deltaTransform.x * multFactor;
+//						transformPointer->y = startTransformPointer->y + deltaTransform.y * multFactor;
+//						transformPointer->rotate = startTransformPointer->rotate + deltaTransform.rotate * multFactor;
+//						transformPointer->barrel = startTransformPointer->barrel + deltaTransform.barrel * multFactor;
+//						transformPointer->rshutter = startTransformPointer->rshutter + deltaTransform.rshutter * multFactor;
+//						transformPointer->zoom = startTransformPointer->zoom + deltaTransform.zoom * multFactor;
+//						transformPointer->extra = 0;
+//						fprintf(stderr,"Override: [%i] - x:%5lf y:%5lf r:%5lf z:%5lf\n",i, transformPointer->x,transformPointer->y, transformPointer->rotate, transformPointer->zoom);
+
+						relativeIndex++;
+					}
+
+					//=-- Advance i the additional amount of bad frames we have processed, besides the current
+					i += consecutiveBadFrames - 1;
+				}
+
+			}
+		}
+
+
+		//=-- Initialize variables
+		int smoothingOneSidedCount = td->conf.smoothing;
+		int smoothingTwoSidedCount = td->conf.smoothing * 2 + 1;
+		double sigma2 = sqr(smoothingOneSidedCount / 2.0);
+
+		//=-- Initialize 1D gaussian kernel
+		VSArray kernel = vs_array_new(smoothingTwoSidedCount);
+		for (int i = 0; i <= smoothingOneSidedCount; i++) {
+			kernel.dat[i] = kernel.dat[smoothingTwoSidedCount - i - 1] = exp(
+					-sqr(i - smoothingOneSidedCount) / sigma2);
+		}
+//		vs_array_print(kernel, stdout);
+
+		//=-- Process all frames
+		for (int i = 0; i < transformsContainer->len; i++) {
+//			currentTransform = transforms[i];
+//			fprintf(stderr,"Pre: [%i] - x:%5lf y:%5lf r:%5lf e:%i\n",i, currentTransform.x,currentTransform.y, currentTransform.rotate, currentTransform.extra );
+
+			// make a convolution:
+			double weightsum = 0;
+			VSTransform avg = null_transform();
+//			fprintf(stderr, "Doing smoothing for frame %i/%i \n", i, transformsContainer->len);
+
+			//=- Process all frames within the smoothing bandwidth
+			for (int relativeFrameIndex = 0;
+					relativeFrameIndex < smoothingTwoSidedCount;
+					relativeFrameIndex++) {
+				int absoluteFrameIndex = i + relativeFrameIndex - smoothingOneSidedCount;
+
+				//=- Check whether frame index is in all frames range
+				if (absoluteFrameIndex >= 0 && absoluteFrameIndex < transformsContainer->len) {
+
+					//=- Dont use bad frames or scene cuts for smoothing
+					if (transformsContainerCopy[absoluteFrameIndex].extra == 1) {
+						continue;
+
+//						// deal with scene cuts or bad frames
+//						fprintf(stderr, "Encountered bad frame [%i]-(%i) \n", absoluteFrameIndex, relativeFrameIndex);
+//						if (relativeFrameIndex < smoothingOneSidedCount) { // in the past of our frame: ignore everthing before
+//							avg = null_transform();
+//							weightsum = 0;
+//							continue;
+//						}
+//						else if (relativeFrameIndex
+//								== smoothingOneSidedCount) {
+//							//current frame or in future: stop here
+//							//for current frame: ignore completely
+//							weightsum = 0;
+//
+//							break;
+//						}
+					}
+					weightsum += kernel.dat[relativeFrameIndex];
+					avg = add_transforms_(avg,
+							mult_transform(&transformsContainerCopy[absoluteFrameIndex],
+									kernel.dat[relativeFrameIndex]));
+				}
+			}
+
+			if (weightsum > 0) {
+				avg = mult_transform(&avg, 1.0 / weightsum);
+
+				// high frequency must be transformed away
+				transforms[i] = sub_transforms(&transforms[i], &avg);
+			}
+
+			if (td->conf.verbose & VS_DEBUG) {
+				vs_log_msg(td->conf.modName,
+						" avg: %5lf, %5lf, %5lf extra: %i weightsum %5lf",
+						avg.x, avg.y, avg.rotate, transforms[i].extra, weightsum);
+			}
+		}
+
+//		VSTransform currentTransform;
+//		for (int i = 0; i < transformsContainer->len; i++) {
+//			currentTransform = transforms[i];
+//			fprintf(stderr,"Post: [%i] - x:%5lf y:%5lf r:%5lf e:%i\n",i, currentTransform.x,currentTransform.y, currentTransform.rotate, currentTransform.extra );
+//		}
+
+	}
+
+	return VS_OK;
 }
 
 /*
@@ -308,7 +429,7 @@ int cameraPathGaussian(VSTransformData* td, VSTransformations* trans){
  *  This supports slow camera movement (low frequency), but in a smooth fasion.
  *  Here a simple average based filter
  */
-int cameraPathAvg(VSTransformData* td, VSTransformations* trans){
+int cameraPathAvg(VSTransformData* td, VSTransformationsContainer* trans){
   VSTransform* ts = trans->ts;
 
   if (trans->len < 1)
@@ -368,12 +489,12 @@ int cameraPathAvg(VSTransformData* td, VSTransformations* trans){
       if (td->conf.verbose & VS_DEBUG) {
         vs_log_msg(td->conf.modName,
                    "s_sum: %5lf %5lf %5lf, ts: %5lf, %5lf, %5lf\n",
-                   s_sum.x, s_sum.y, s_sum.alpha,
-                   ts[i].x, ts[i].y, ts[i].alpha);
+                   s_sum.x, s_sum.y, s_sum.rotate,
+                   ts[i].x, ts[i].y, ts[i].rotate);
         vs_log_msg(td->conf.modName,
                    "  avg: %5lf, %5lf, %5lf avg2: %5lf, %5lf, %5lf",
-                   avg.x, avg.y, avg.alpha,
-                   avg2.x, avg2.y, avg2.alpha);
+                   avg.x, avg.y, avg.rotate,
+                   avg2.x, avg2.y, avg2.rotate);
       }
     }
     vs_free(ts2);
@@ -404,7 +525,8 @@ int cameraPathAvg(VSTransformData* td, VSTransformations* trans){
  * Side effects:
  *     td->trans will be modified
  */
-int vsPreprocessTransforms(VSTransformData* td, VSTransformations* trans)
+//TODO [DEBUG] Apply zoom
+int vsPreprocessTransforms(VSTransformData* td, VSTransformationsContainer* trans)
 {
   // works inplace on trans
   if(cameraPathOptimization(td, trans)!=VS_OK) return VS_ERROR;
@@ -424,54 +546,77 @@ int vsPreprocessTransforms(VSTransformData* td, VSTransformations* trans)
     }
   if (td->conf.maxAngle != - 1.0)
     for (int i = 0; i < trans->len; i++)
-      ts[i].alpha = VS_CLAMP(ts[i].alpha, -td->conf.maxAngle, td->conf.maxAngle);
+      ts[i].rotate = VS_CLAMP(ts[i].rotate, -td->conf.maxAngle, td->conf.maxAngle);
 
-  /* Calc optimal zoom (1)
-   *  cheap algo is to only consider translations
-   *  uses cleaned max and min to eliminate 99% of transforms
-   */
-  if (td->conf.optZoom == 1 && trans->len > 1){
-    VSTransform min_t, max_t;
-    cleanmaxmin_xy_transform(ts, trans->len, 1, &min_t, &max_t);  // 99% of all transformations
-    // the zoom value only for x
-    double zx = 2*VS_MAX(max_t.x,fabs(min_t.x))/td->fiSrc.width;
-    // the zoom value only for y
-    double zy = 2*VS_MAX(max_t.y,fabs(min_t.y))/td->fiSrc.height;
-    td->conf.zoom += 100 * VS_MAX(zx,zy); // use maximum
-    td->conf.zoom = VS_CLAMP(td->conf.zoom,-60,60);
-    vs_log_info(td->conf.modName, "Final zoom: %lf\n", td->conf.zoom);
+  if (trans->len > 1) {
+
+	  if (td->conf.optZoom == 1){
+
+	  /* Calc optimal zoom (1)
+	   *  cheap algo is to only consider translations
+	   *  uses cleaned max and min to eliminate 99% of transforms
+	   */
+
+		VSTransform min_t, max_t;
+		cleanmaxmin_xy_transform(ts, trans->len, 1, &min_t, &max_t);  // 99% of all transformations
+		// the zoom value only for x
+		double zx = 2*VS_MAX(max_t.x,fabs(min_t.x))/td->fiSrc.width;
+		// the zoom value only for y
+		double zy = 2*VS_MAX(max_t.y,fabs(min_t.y))/td->fiSrc.height;
+		td->conf.zoom += 100 * VS_MAX(zx,zy); // use maximum
+		td->conf.zoom = VS_CLAMP(td->conf.zoom,-60,60);
+		vs_log_info(td->conf.modName, "Final zoom: %lf\n", td->conf.zoom);
+
+	  } else if (td->conf.optZoom == 2 && trans->len > 1){
+
+	  /* Calc optimal zoom (2)
+	   *  sliding average to zoom only as much as needed also using rotation angles
+	   *  the baseline zoom is the mean required zoom + global zoom
+	   *  in order to avoid too much zooming in and out
+	   */
+		double* zooms=(double*)vs_zalloc(sizeof(double)*trans->len);
+		int w = td->fiSrc.width;
+		int h = td->fiSrc.height;
+		double req;
+		double meanzoom;
+		for (int i = 0; i < trans->len; i++) {
+//		  VSTransform relativeTransform;
+//		  if (i > 1) {
+//			  relativeTransform = sub_transforms(&ts[i], &ts[i-1]);
+//		  } else {
+//			  relativeTransform = ts[i];
+//		  }
+//		  zooms[i] = transform_get_required_zoom(&relativeTransform, w, h);
+
+		  zooms[i] = transform_get_required_zoom(&ts[i], w, h);
+
+
+//		  fprintf(stderr, "Required zoom for [%i]: %f\n", i, zooms[i]);
+		}
+		meanzoom = mean(zooms, trans->len) + td->conf.zoom; // add global zoom
+		// forward - propagation (to make the zooming smooth)
+		req = meanzoom;
+		for (int i = 0; i < trans->len; i++) {
+		  req = VS_MAX(req, zooms[i]);
+		  ts[i].zoom=VS_MAX(ts[i].zoom,req);
+//		  fprintf(stderr, "Zoom out for [%i]: %f\n", i, ts[i].zoom);
+		  req= VS_MAX(meanzoom, req - td->conf.zoomSpeed); // zoom-out each frame
+//		  fprintf(stderr, "New req after [%i]: %f\n", i, req);
+		}
+		// backward - propagation
+		req = meanzoom;
+		for (int i = trans->len-1; i >= 0; i--) {
+		  req = VS_MAX(req, zooms[i]);
+		  ts[i].zoom=VS_MAX(ts[i].zoom,req);
+//		  fprintf(stderr, "CP for [%i]: %f\n", i, ts[i].zoom);
+		  req= VS_MAX(meanzoom, req - td->conf.zoomSpeed);
+//		  fprintf(stderr, "New req(BP) after [%i]: %f\n", i, req);
+		}
+		vs_free(zooms);
+	  }
   }
-  /* Calc optimal zoom (2)
-   *  sliding average to zoom only as much as needed also using rotation angles
-   *  the baseline zoom is the mean required zoom + global zoom
-   *  in order to avoid too much zooming in and out
-   */
-  if (td->conf.optZoom == 2 && trans->len > 1){
-    double* zooms=(double*)vs_zalloc(sizeof(double)*trans->len);
-    int w = td->fiSrc.width;
-    int h = td->fiSrc.height;
-    double req;
-    double meanzoom;
-    for (int i = 0; i < trans->len; i++) {
-      zooms[i] = transform_get_required_zoom(&ts[i], w, h);
-    }
-    meanzoom = mean(zooms, trans->len) + td->conf.zoom; // add global zoom
-    // forward - propagation (to make the zooming smooth)
-    req = meanzoom;
-    for (int i = 0; i < trans->len; i++) {
-      req = VS_MAX(req, zooms[i]);
-      ts[i].zoom=VS_MAX(ts[i].zoom,req);
-      req= VS_MAX(meanzoom, req - td->conf.zoomSpeed); // zoom-out each frame
-    }
-    // backward - propagation
-    req = meanzoom;
-    for (int i = trans->len-1; i >= 0; i--) {
-      req = VS_MAX(req, zooms[i]);
-      ts[i].zoom=VS_MAX(ts[i].zoom,req);
-      req= VS_MAX(meanzoom, req - td->conf.zoomSpeed);
-    }
-    vs_free(zooms);
-  }else if (td->conf.zoom != 0){ /* apply global zoom */
+
+  if (td->conf.zoom != 0 && td->conf.optZoom != 2){ /* apply global zoom */
     for (int i = 0; i < trans->len; i++)
       ts[i].zoom += td->conf.zoom;
   }
@@ -537,7 +682,7 @@ VSTransform vsLowPassTransforms(VSTransformData* td, VSSlidingAvgTrans* mem,
       newtrans.y     = VS_CLAMP(newtrans.y, -td->conf.maxShift, td->conf.maxShift);
     }
     if (td->conf.maxAngle != - 1.0)
-      newtrans.alpha = VS_CLAMP(newtrans.alpha, -td->conf.maxAngle, td->conf.maxAngle);
+      newtrans.rotate = VS_CLAMP(newtrans.rotate, -td->conf.maxAngle, td->conf.maxAngle);
 
     /* Calc sliding optimal zoom
      *  cheap algo is to only consider translations and to sliding avg

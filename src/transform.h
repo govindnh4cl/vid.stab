@@ -39,7 +39,7 @@ typedef struct _vstransformations {
     int current;   // index to current transformation
     int len;       // length of trans array
     short warned_end; // whether we warned that there is no transform left
-} VSTransformations;
+} VSTransformationsContainer;
 
 typedef struct _vsslidingavgtrans {
     VSTransform avg; // average transformation
@@ -181,16 +181,16 @@ const VSFrameInfo* vsTransformGetDestFrameInfo(const VSTransformData* td);
 
 
 /// initializes VSTransformations structure
-void vsTransformationsInit(VSTransformations* trans);
+void vsTransformationsInit(VSTransformationsContainer* trans);
 /// deletes VSTransformations internal memory
-void vsTransformationsCleanup(VSTransformations* trans);
+void vsTransformationsCleanup(VSTransformationsContainer* trans);
 
 /// return next Transform and increases internal counter
-VSTransform vsGetNextTransform(const VSTransformData* td, VSTransformations* trans);
+VSTransform vsGetNextTransform(const VSTransformData* td, VSTransformationsContainer* trans);
 
 /** preprocesses the list of transforms all at once. Here the deshaking is calculated!
  */
-int vsPreprocessTransforms(VSTransformData* td, VSTransformations* trans);
+int vsPreprocessTransforms(VSTransformData* td, VSTransformationsContainer* trans);
 
 /**
  * vsLowPassTransforms: single step smoothing of transforms, using only the past.

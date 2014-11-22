@@ -34,7 +34,7 @@ const char* modname = "vid.stab - serialization";
 
 
 int storeLocalmotion(FILE* f, const LocalMotion* lm){
-  return fprintf(f,"(LM %i %i %i %i %i %lf %lf)", lm->v.x,lm->v.y,lm->f.x,lm->f.y,lm->f.size,
+  return fprintf(f,"(LM %i %i %i %i %i %lf %lf)", lm->vector.x,lm->vector.y,lm->fieldLM.x,lm->fieldLM.y,lm->fieldLM.size,
                  lm->contrast, lm->match);
 }
 
@@ -42,7 +42,7 @@ int storeLocalmotion(FILE* f, const LocalMotion* lm){
 LocalMotion restoreLocalmotion(FILE* f){
   LocalMotion lm;
   char c;
-  if(fscanf(f,"(LM %i %i %i %i %i %lf %lf", &lm.v.x,&lm.v.y,&lm.f.x,&lm.f.y,&lm.f.size,
+  if(fscanf(f,"(LM %i %i %i %i %i %lf %lf", &lm.vector.x,&lm.vector.y,&lm.fieldLM.x,&lm.fieldLM.y,&lm.fieldLM.size,
             &lm.contrast, &lm.match) != 7) {
     vs_log_error(modname, "Cannot parse localmotion!\n");
     return null_localmotion();
@@ -203,7 +203,7 @@ int vsReadLocalMotionsFile(FILE* f, VSManyLocalMotions* mlms){
  *         number of transforms read
  * Preconditions: f is opened
  */
-int vsReadOldTransforms(const VSTransformData* td, FILE* f , VSTransformations* trans)
+int vsReadOldTransforms(const VSTransformData* td, FILE* f , VSTransformationsContainer* trans)
 {
   char l[1024];
   int s = 0;
@@ -218,9 +218,9 @@ int vsReadOldTransforms(const VSTransformData* td, FILE* f , VSTransformations* 
     if (strlen(l) == 0)
       continue; //  ignore empty lines
     // try new format
-    if (sscanf(l, "%i %lf %lf %lf %lf %i", &ti, &t.x, &t.y, &t.alpha,
+    if (sscanf(l, "%i %lf %lf %lf %lf %i", &ti, &t.x, &t.y, &t.rotate,
                &t.zoom, &t.extra) != 6) {
-      if (sscanf(l, "%i %lf %lf %lf %i", &ti, &t.x, &t.y, &t.alpha,
+      if (sscanf(l, "%i %lf %lf %lf %i", &ti, &t.x, &t.y, &t.rotate,
                  &t.extra) != 5) {
         vs_log_error(td->conf.modName, "Cannot parse line: %s", l);
         return 0;

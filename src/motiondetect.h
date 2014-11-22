@@ -125,6 +125,16 @@ int vsMotionDetectInit(VSMotionDetect* md, const VSMotionDetectConfig* conf,
  * */
 int vsMotionDetection(VSMotionDetect* md, LocalMotions* motions, VSFrame *frame);
 
+/**
+ * Calculates average translation and standard deviation for the motions
+ */
+LocalMotionsInfo calculateMotionsAvgAndDeviation(LocalMotions* motions);
+
+/**
+ * Cleans spurious motions from the array
+ */
+LocalMotions cleanupMotions(LocalMotions* motions, LocalMotionsInfo* motionsInfo);
+
 /** Deletes internal data structures.
  * In order to use the VSMotionDetect again, you have to call vsMotionDetectInit
  */
@@ -135,6 +145,13 @@ void vsMotionDetectGetConfig(VSMotionDetectConfig* conf, const VSMotionDetect* m
 
 /// returns the frame info
 const VSFrameInfo* vsMotionDetectGetFrameInfo(const VSMotionDetect* md);
+
+void initContrastLookup();
+
+void initDerivativeKernel();
+
+void calculateDerivativeImage(unsigned char* dest, const unsigned char* src,
+	    VSFrame* buffer, const VSFrameInfo* fi, int dest_strive, int src_strive);
 
 #endif  /* MOTIONDETECT_H */
 

@@ -30,7 +30,7 @@ void test_motionDetect(TestData* testdata){
     storeVSTransform(stderr,&t);
     VSTransform orig = mult_transform_(getTestFrameTransform(i),-1.0);
     VSTransform diff = sub_transforms(&t,&orig);
-    int success = fabs(diff.x)<2 && fabs(diff.y)<2 && fabs(diff.alpha)<0.005;
+    int success = fabs(diff.x)<2 && fabs(diff.y)<2 && fabs(diff.rotate)<0.005;
     if(!success){
       fprintf(stderr,"Difference: ");
       storeVSTransform(stderr,&diff);

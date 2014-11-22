@@ -2,8 +2,8 @@ int compare_localmotions(const LocalMotions* lms1, const LocalMotions* lms2){
   test_bool(vs_vector_size(lms1) == vs_vector_size(lms2));
   int i;
   for(i=0; i<vs_vector_size(lms1); i++){
-    test_bool(LMGet(lms1,i)->v.x == LMGet(lms2,i)->v.x);
-    test_bool(LMGet(lms1,i)->v.y == LMGet(lms2,i)->v.y);
+    test_bool(LMGet(lms1,i)->vector.x == LMGet(lms2,i)->vector.x);
+    test_bool(LMGet(lms1,i)->vector.y == LMGet(lms2,i)->vector.y);
   }
   return 1;
 }

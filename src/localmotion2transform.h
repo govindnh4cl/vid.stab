@@ -35,7 +35,7 @@
  */
 int vsLocalmotions2Transforms(VSTransformData* td,
                               const VSManyLocalMotions* motions,
-                              VSTransformations* trans );
+                              VSTransformationsContainer* trans );
 
 /** calculates rotation angle for the given transform and
  * field with respect to the given center-point
@@ -62,7 +62,7 @@ VSTransform vsSimpleMotionsToTransform(VSFrameInfo fi, const char* modname,
 */
 VSTransform vsMotionsToTransform(VSTransformData* td,
                                  const LocalMotions* motions,
-                                 FILE* f);
+                                 FILE* f, int frameIndex);
 
 
 

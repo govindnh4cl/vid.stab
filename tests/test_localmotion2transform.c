@@ -23,14 +23,14 @@ void test_localmotion2transform(TestData* testdata){
     /* for(k=0; k < vs_vector_size(&localmotions); k++){ */
     /*   localmotion_print(LMGet(&localmotions,k),stderr); */
     /* } */
-    t = vsMotionsToTransform(&td, &localmotions, 0);
+    t = vsMotionsToTransform(&td, &localmotions, 0, i);
 
     vs_vector_del(&localmotions);
     fprintf(stderr,"%i: ",i);
     storeVSTransform(stderr,&t);
     VSTransform orig = mult_transform_(getTestFrameTransform(i),-1.0);
     VSTransform diff = sub_transforms(&t,&orig);
-    int tolerance = fabs(diff.x)<1 && fabs(diff.y)<1 && fabs(diff.alpha)<0.001;
+    int tolerance = fabs(diff.x)<1 && fabs(diff.y)<1 && fabs(diff.rotate)<0.001;
     if(!tolerance){
       fprintf(stderr,"Difference: ");
       storeVSTransform(stderr,&diff);

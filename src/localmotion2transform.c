@@ -36,7 +36,7 @@
 
 int vsLocalmotions2Transforms(VSTransformData* td,
                               const VSManyLocalMotions* motions,
-                              VSTransformations* trans ){
+                              VSTransformationsContainer* trans ){
   int len = vs_vector_size(motions);
   assert(trans->len==0 && trans->ts == 0);
   trans->ts = vs_malloc(sizeof(VSTransform)*len );
@@ -48,7 +48,8 @@ int vsLocalmotions2Transforms(VSTransformData* td,
 
   if(td->conf.simpleMotionCalculation==0){
     for(int i=0; i< vs_vector_size(motions); i++) {
-      trans->ts[i]=vsMotionsToTransform(td,VSMLMGet(motions,i), f);
+//      fprintf(stderr, "Transforming motions for %i\n", i);
+      trans->ts[i]=vsMotionsToTransform(td,VSMLMGet(motions,i), f, i);
     }
   }else{
     for(int i=0; i< vs_vector_size(motions); i++) {
@@ -68,7 +69,7 @@ VSArray vsTransformToArray(const VSTransform* t){
   VSArray a = vs_array_new(4);
   a.dat[0] = t->x;
   a.dat[1] = t->y;
-  a.dat[2] = t->alpha;
+  a.dat[2] = t->rotate;
   a.dat[3] = t->zoom;
   return a;
 }
@@ -96,17 +97,17 @@ double calcTransformQuality(VSArray params, void* dat){
     if(gd->missmatches.dat[i]>=0){
       LocalMotion* m = LMGet(motions,i);
       double vx,vy;
-      transform_vec_double(&vx, &vy, &pt, (Vec*)&m->f);
-      vx -= m->f.x; vy -= m->f.y;
-      double e   = sqr(vx - m->v.x) +  sqr(vy - m->v.y);
+      transform_vec_double(&vx, &vy, &pt, (Vec*)&m->fieldLM);
+      vx -= m->fieldLM.x; vy -= m->fieldLM.y;
+      double e   = sqr(vx - m->vector.x) +  sqr(vy - m->vector.y);
       gd->missmatches.dat[i]=e;
       error += e;
       num++;
     }
   }
-  // 1 pixel translation missmatch is roughly (with size 500):
+  // 1 pixel translation mismatch is roughly (with size 500):
   // alpha=0.11 (degree), zoom=0.2; The zoom is however often much larger, so less penalty.
-  return error/num + fabs(t.alpha)/5.0 + fabs(t.zoom)/500.0;
+  return error/num + fabs(t.rotate)/5.0 + fabs(t.zoom)/500.0;
 }
 
 double intMean(const int* ds, int len) {
@@ -115,13 +116,14 @@ double intMean(const int* ds, int len) {
   return sum / len;
 }
 
-// only calcates means transform to initialise gradient descent
+// only calculates means transform to initialise gradient descent
 VSTransform meanMotions(VSTransformData* td, const LocalMotions* motions){
   int len = vs_vector_size(motions);
   int* xs = localmotions_getx(motions);
   int* ys = localmotions_gety(motions);
   VSTransform t = null_transform();
   if(motions==0 || len==0) {
+
     t.extra = 1; // prob. blank frame or too low contrast, ignore later
     return t;
   }
@@ -155,25 +157,45 @@ int disableFields(VSArray mask, VSArray missqualities, double stddevs){
   return cnt;
 }
 
-VSTransform vsMotionsToTransform(VSTransformData* td,
+/**
+ * Converts previously calculated motions to actual transform data
+ * (melt comment: outputFile does not seem to be the file specifiable in the melt commandline)
+ */
+// TODO [DEBUGGING] Motions to transforms
+VSTransform vsMotionsToTransform(VSTransformData* transformData,
                                  const LocalMotions* motions,
-                                 FILE* f){
-  VSTransform t = meanMotions(td, motions);
+                                 FILE* outputFile, int frameIndex){
+  VSTransform t = meanMotions(transformData, motions);
   if(motions==0 || vs_vector_size(motions)==0){
-    if (f) fprintf(f,"0 0 0 0 0 %i\n# no fields\n", t.extra);
+    if (outputFile) fprintf(outputFile,"0 0 0 0 0 %i\n# no fields\n", t.extra);
     return t;
   }
-  VSArray missmatches = vs_array_new(vs_vector_size(motions));
+  VSArray mismatches = vs_array_new(vs_vector_size(motions));
   VSArray params = vsTransformToArray(&t);
   double residual;
   struct VSGradientDat dat;
   dat.motions = motions;
-  dat.td      = td;
-  dat.missmatches = missmatches;
+  dat.td      = transformData;
+  dat.missmatches = mismatches;
+  int motionsCount = vs_vector_size(motions);
 
-  // first we throw away those fields that match badely (during motion detection)
+
+  //=-- [CUSTOM] Determine whether we want to transform at all, naively based on count of motions
+  if (motionsCount < 10) {
+//	  fprintf(stderr, "Doing null transform for [%i], motionCount: %i\n", frameIndex, motionsCount);
+	  t = null_transform();
+	  t.extra = 1;
+	  return t;
+  }
+//  else {
+//	  fprintf(stderr, "Acceptable number of motions found for [%i], motionCount: %i,qualitySum: %f\n", frameIndex, motionsCount, qualitySum);
+//  }
+
+  //=-- Retrieve match qualities of local motions
   VSArray matchQualities = localmotionsGetMatch(motions);
-  int dis1=disableFields(missmatches, matchQualities, 1.5);
+
+  // first we throw away those fields that match badly (during motion detection)
+  int dis1=disableFields(mismatches, matchQualities, 1.5);
   vs_array_free(matchQualities);
 
   VSArray result;
@@ -190,27 +212,34 @@ VSTransform vsMotionsToTransform(VSTransformData* td,
     // this will cut off the tail
     // do this only two times (3 gradient optimizations in total)
     if((k==0 && residual>0.1) || (k==1 && residual>20)){
-      dis2 += disableFields(missmatches, missmatches, 1.0);
+      dis2 += disableFields(mismatches, mismatches, 1.0);
       params = result;
     } else break;
   }
 
-  if(td->conf.verbose  & VS_DEBUG)
-    vs_log_info(td->conf.modName, "disabled (%i+%i)/%i,\tresidual: %f (%i)\n",
-                dis1, dis2, vs_vector_size(motions), residual, k+1);
+  if(transformData->conf.verbose  & VS_DEBUG) {
+    vs_log_info(transformData->conf.modName, "disabled (%i+%i)/%i,\tresidual: %f (%i)\n",
+                dis1, dis2, motionsCount, residual, k+1);
+  }
+//  fprintf(stderr, "disabled (%i+%i)/%i,\tresidual: %f (%i)\n", dis1, dis2, motionsCount, residual, k+1);
+
   t = vsArrayToTransform(result);
   vs_array_free(result);
-  vs_array_free(missmatches);
+  vs_array_free(mismatches);
   // check if sufficiently good match was achieved:
   if(residual>100){ // test threshold.
+//	  fprintf(stderr,"Extra to 1, residual %f \n", residual);
     t.extra=1;
   }
-  if(f){
-    fprintf(f,"0 %f %f %f %f %i\n#\t\t\t\t\t %f %i\n", t.x, t.y, t.alpha, t.zoom, t.extra,
+
+
+  if(outputFile){
+    fprintf(outputFile,"0 %f %f %f %f %i\n#\t\t\t\t\t %f %i\n", t.x, t.y, t.rotate, t.zoom, t.extra,
             residual, k + 1);
   }
-  if(!td->conf.smoothZoom)
+  if(!transformData->conf.smoothZoom) {
     t.zoom=0;
+  }
   return t;
 }
 
@@ -262,13 +291,13 @@ VSArray vsGradientDescent(double (*eval)(VSArray, void*),
  */
 double vsCalcAngle(const LocalMotion* lm, int center_x, int center_y){
   // we better ignore fields that are to close to the rotation center
-  if (abs(lm->f.x - center_x) + abs(lm->f.y - center_y) < lm->f.size*2) {
+  if (abs(lm->fieldLM.x - center_x) + abs(lm->fieldLM.y - center_y) < lm->fieldLM.size*2) {
     return 0;
   } else {
     // double r = sqrt(lm->f.x*lm->f.x + lm->f.y*lm->f.y);
-    double a1 = atan2(lm->f.y - center_y, lm->f.x - center_x);
-    double a2 = atan2(lm->f.y - center_y + lm->v.y,
-                      lm->f.x - center_x + lm->v.x);
+    double a1 = atan2(lm->fieldLM.y - center_y, lm->fieldLM.x - center_x);
+    double a2 = atan2(lm->fieldLM.y - center_y + lm->vector.y,
+                      lm->fieldLM.x - center_x + lm->vector.x);
     double diff = a2 - a1;
     return (diff > M_PI) ? diff - 2 * M_PI : ((diff < -M_PI) ? diff + 2
                 * M_PI : diff);
@@ -291,8 +320,8 @@ VSTransform vsSimpleMotionsToTransform(VSFrameInfo fi, const char* modName,
 
   // calc center point of all remaining fields
   for (i = 0; i < num_motions; i++) {
-    center_x += LMGet(motions,i)->f.x;
-    center_y += LMGet(motions,i)->f.y;
+    center_x += LMGet(motions,i)->fieldLM.x;
+    center_y += LMGet(motions,i)->fieldLM.y;
   }
   center_x /= num_motions;
   center_y /= num_motions;
@@ -303,7 +332,7 @@ VSTransform vsSimpleMotionsToTransform(VSFrameInfo fi, const char* modName,
   // figure out angle
   if (num_motions < 6) {
     // the angle calculation is inaccurate for 5 and less fields
-    t.alpha = 0;
+    t.rotate = 0;
   } else {
     for (i = 0; i < num_motions; i++) {
       // substract avg and calc angle
@@ -311,9 +340,9 @@ VSTransform vsSimpleMotionsToTransform(VSFrameInfo fi, const char* modName,
       angles[i] = vsCalcAngle(&m, center_x, center_y);
     }
     double min, max;
-    t.alpha = -cleanmean(angles, num_motions, &min, &max);
+    t.rotate = -cleanmean(angles, num_motions, &min, &max);
     if (max - min > 1.0) {
-      t.alpha = 0;
+      t.rotate = 0;
       vs_log_info(modName, "too large variation in angle(%f)\n",
       max-min);
     }
@@ -322,8 +351,8 @@ VSTransform vsSimpleMotionsToTransform(VSFrameInfo fi, const char* modName,
   // compensate for off-center rotation
   double p_x = (center_x - fi.width / 2);
   double p_y = (center_y - fi.height / 2);
-  t.x = meanmotion.v.x + (cos(t.alpha) - 1) * p_x - sin(t.alpha) * p_y;
-  t.y = meanmotion.v.y + sin(t.alpha) * p_x + (cos(t.alpha) - 1) * p_y;
+  t.x = meanmotion.vector.x + (cos(t.rotate) - 1) * p_x - sin(t.rotate) * p_y;
+  t.y = meanmotion.vector.y + sin(t.rotate) * p_x + (cos(t.rotate) - 1) * p_y;
 
   return t;
 }

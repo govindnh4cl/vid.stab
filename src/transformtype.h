@@ -34,7 +34,7 @@
 typedef struct _transform {
     double x;
     double y;
-    double alpha;
+    double rotate;
     double zoom;
     double barrel;
     double rshutter;
@@ -58,11 +58,21 @@ typedef struct _vec {
 /* structure to hold information about local motion.
  */
 typedef struct _localmotion {
-    Vec v;
-    Field f;
+    Vec vector;
+    Field fieldLM;
     double contrast; // local contrast of the measurement field
     double match;    // quality of match
 } LocalMotion;
+
+
+/* structure to hold extra information about local motions.
+ */
+typedef struct _localmotionsinfo {
+    double averageTranslationX;
+    double averageTranslationY;
+    double stdDevX;
+    double stdDevY;
+} LocalMotionsInfo;
 
 typedef VSVector LocalMotions;
 

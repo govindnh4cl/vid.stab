@@ -32,7 +32,7 @@ VSTransform getTestFrameTransform(int i){
   VSTransform t = null_transform();
   t.x = ( (i%2)==0 ? -1 : 1)  *i*5;
   t.y = ( (i%3)==0 ?  1 : -1) *i*5;
-  t.alpha = (i<3 ? 0 : 1) * (i)*1*M_PI/(180.0);
+  t.rotate = (i<3 ? 0 : 1) * (i)*1*M_PI/(180.0);
   t.zoom = 0;
   return t;
 }

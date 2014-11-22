@@ -71,7 +71,7 @@ int vsReadFromFile(FILE* f, LocalMotions* lms);
 int vsReadLocalMotionsFile(FILE* f, VSManyLocalMotions* lms);
 
 // read the transformations from the given file (Deprecated format)
-int vsReadOldTransforms(const VSTransformData* td, FILE* f , VSTransformations* trans);
+int vsReadOldTransforms(const VSTransformData* td, FILE* f , VSTransformationsContainer* trans);
 
 
 #endif

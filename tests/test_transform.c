@@ -39,7 +39,7 @@ void test_transform_implementation(const TestData* testdata){
   int sum;
   VSTransform t;
   t.x = 10;
-  t.alpha = 2*M_PI/(180.0);
+  t.rotate = 2*M_PI/(180.0);
 
   for(it=VS_Zero; it<=VS_BiCubic; it++){
     vsFrameCopy(&dest, &src, &fi);
@@ -101,7 +101,7 @@ void test_transform_performance(const TestData* testdata){
     for(i=0; i<numruns; i++){
       VSTransform t = null_transform();
       t.x = i*10+10;
-      t.alpha = (i+1)*2*M_PI/(180.0);
+      t.rotate = (i+1)*2*M_PI/(180.0);
       t.zoom = 0;
       vsFrameCopy(&dest, &testdata->frames[0], &testdata->fi);
       test_bool(vsTransformPrepare(&td,&dest,&dest)== VS_OK);
@@ -125,7 +125,7 @@ void test_transform_performance(const TestData* testdata){
     for(i=0; i<numruns; i++){
       VSTransform t = null_transform();
       t.x = i*10+10;
-      t.alpha = (i+1)*2*M_PI/(180.0);
+      t.rotate = (i+1)*2*M_PI/(180.0);
       t.zoom = 0;
       vsFrameCopy(&dest, &testdata->frames[0], &testdata->fi);
       test_bool(vsTransformPrepare(&td,&dest,&dest)== VS_OK);

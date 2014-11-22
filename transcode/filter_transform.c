@@ -52,7 +52,7 @@ typedef struct {
     VSTransformData td;
     vob_t* vob;          // pointer to information structure
 
-    VSTransformations trans; // transformations
+    VSTransformationsContainer trans; // transformations
 
 
     double sharpen;     // amount of sharpening

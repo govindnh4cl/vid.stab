@@ -39,7 +39,7 @@ VSTransform new_transform(double x, double y, double alpha,
   VSTransform t;
   t.x        = x;
   t.y        = y;
-  t.alpha    = alpha;
+  t.rotate    = alpha;
   t.zoom     = zoom;
   t.barrel   = barrel;
   t.rshutter = rshutter;
@@ -59,11 +59,11 @@ VSTransform add_transforms(const VSTransform* t1, const VSTransform* t2)
   VSTransform t;
   t.x        = t1->x + t2->x;
   t.y        = t1->y + t2->y;
-  t.alpha    = t1->alpha + t2->alpha;
+  t.rotate    = t1->rotate + t2->rotate;
   t.zoom     = t1->zoom + t2->zoom;
   t.barrel   = t1->barrel + t2->barrel;
   t.rshutter = t1->rshutter + t2->rshutter;
-  t.extra    = t1->extra || t2->extra;
+  t.extra    = t1->extra; //FKNote: ORing the extra values was pretty meaningless.
   return t;
 }
 
@@ -79,11 +79,11 @@ VSTransform sub_transforms(const VSTransform* t1, const VSTransform* t2)
   VSTransform t;
   t.x        = t1->x - t2->x;
   t.y        = t1->y - t2->y;
-  t.alpha    = t1->alpha - t2->alpha;
+  t.rotate    = t1->rotate - t2->rotate;
   t.zoom     = t1->zoom - t2->zoom;
   t.barrel   = t1->barrel - t2->barrel;
   t.rshutter = t1->rshutter - t2->rshutter;
-  t.extra    = t1->extra || t2->extra;
+  t.extra    = t1->extra; //FKNote: ORing the extra values was pretty meaningless.
   return t;
 }
 
@@ -93,7 +93,7 @@ VSTransform mult_transform(const VSTransform* t1, double f)
   VSTransform t;
   t.x        = t1->x        * f;
   t.y        = t1->y        * f;
-  t.alpha    = t1->alpha    * f;
+  t.rotate    = t1->rotate    * f;
   t.zoom     = t1->zoom     * f;
   t.barrel   = t1->barrel   * f;
   t.rshutter = t1->rshutter * f;
@@ -108,7 +108,7 @@ VSTransform mult_transform_(const VSTransform t1, double f)
 }
 
 void storeVSTransform(FILE* f, const VSTransform* t){
-  fprintf(f,"Trans %lf %lf %lf %lf %i\n", t->x, t->y, t->alpha, t->zoom, t->extra);
+  fprintf(f,"Trans %lf %lf %lf %lf %i\n", t->x, t->y, t->rotate, t->zoom, t->extra);
 }
 
 
@@ -116,8 +116,8 @@ PreparedTransform prepare_transform(const VSTransform* t, const VSFrameInfo* fi)
   PreparedTransform pt;
   pt.t = t;
   double z = 1.0+t->zoom/100.0;
-  pt.zcos_a = z*cos(t->alpha); // scaled cos
-  pt.zsin_a = z*sin(t->alpha); // scaled sin
+  pt.zcos_a = z*cos(t->rotate); // scaled cos
+  pt.zsin_a = z*sin(t->rotate); // scaled sin
   pt.c_x    = fi->width / 2;
   pt.c_y    = fi->height / 2;
   return pt;
@@ -289,8 +289,18 @@ void cleanmaxmin_xy_transform(const VSTransform* transforms, int len,
 /* calculates the required zoom value to have no borders visible
  */
 double transform_get_required_zoom(const VSTransform* transform, int width, int height){
-  return 100.0*(2.0*VS_MAX(fabs(transform->x)/width,fabs(transform->y)/height)  // translation part
-                + fabs(sin(transform->alpha)));          // rotation part
+	double xTrans;
+	double yTrans;
+	double rotPart;
+
+	xTrans = fabs(transform->x)/width;
+	yTrans = fabs(transform->y)/height;
+	rotPart = fabs(sin(transform->rotate));
+
+//	fprintf(stderr, "%f %f %f\n",xTrans, yTrans, rotPart);
+
+  return 100.0*(2.0*VS_MAX(xTrans,yTrans)  // translation part
+                + rotPart);          // rotation part
 
 }
 
@@ -401,7 +411,7 @@ int* localmotions_getx(const LocalMotions* localmotions){
   int* xs = vs_malloc(sizeof(int) * len);
   int i;
   for (i=0; i<len; i++){
-    xs[i]=LMGet(localmotions,i)->v.x;
+    xs[i]=LMGet(localmotions,i)->vector.x;
   }
   return xs;
 }
@@ -411,15 +421,15 @@ int* localmotions_gety(const LocalMotions* localmotions){
   int* ys = vs_malloc(sizeof(int) * len);
   int i;
   for (i=0; i<len; i++){
-    ys[i]=LMGet(localmotions,i)->v.y;
+    ys[i]=LMGet(localmotions,i)->vector.y;
   }
   return ys;
 }
 
 LocalMotion sub_localmotion(const LocalMotion* lm1, const LocalMotion* lm2){
   LocalMotion res = *lm1;
-  res.v.x -= lm2->v.x;
-  res.v.y -= lm2->v.y;
+  res.vector.x -= lm2->vector.x;
+  res.vector.y -= lm2->vector.y;
   return res;
 }
 
@@ -446,19 +456,19 @@ LocalMotion cleanmean_localmotions(const LocalMotions* localmotions)
   int* xs = localmotions_getx(localmotions);
   int* ys = localmotions_gety(localmotions);
   LocalMotion m = null_localmotion();
-  m.v.x=0; m.v.y=0;
+  m.vector.x=0; m.vector.y=0;
   qsort(xs,len, sizeof(int), cmp_int);
   for (i = cut; i < len - cut; i++){ // all but cutted
-    m.v.x += xs[i];
+    m.vector.x += xs[i];
   }
   qsort(ys, len, sizeof(int), cmp_int);
   for (i = cut; i < len - cut; i++){ // all but cutted
-    m.v.y += ys[i];
+    m.vector.y += ys[i];
   }
   vs_free(xs);
   vs_free(ys);
-  m.v.x/=(len - (2.0 * cut));
-  m.v.y/=(len - (2.0 * cut));
+  m.vector.x/=(len - (2.0 * cut));
+  m.vector.y/=(len - (2.0 * cut));
   return m;
 }
 

@@ -45,6 +45,12 @@
 
 #define USE_SPIRAL_FIELD_CALC
 
+int contrast = 400;
+int contrastLookup[256];
+int contrastLookupInitialized = 0;
+int derivativeKernelSize = 4;
+float derivativeKernel[4][4];
+int derivativeKernelInitialized = 0;
 
 /* internal data structures */
 
@@ -52,7 +58,7 @@
 typedef struct _contrast_idx {
   double contrast;
   int index;
-} contrast_idx;
+} ContrastContainer;
 
 
 VSMotionDetectConfig vsMotionDetectGetDefaultConfig(const char* modName){
@@ -167,91 +173,145 @@ short lm_match_better(void* thresh, void* lm){
     return 0;
 }
 
+// TODO [DEBUGGING] Detect motion
 int vsMotionDetection(VSMotionDetect* md, LocalMotions* motions, VSFrame *frame) {
+// fprintf(stderr, "Processing frame %i\n", md->frameNum);
  assert(md->initialized==2);
 
-  md->currorig = *frame;
-  // smoothen image to do better motion detection
-  //  (larger stepsize or eventually gradient descent (need higher resolution))
-  if (md->fi.pFormat > PF_PACKED) {
-    // we could calculate a grayscale version and use the PLANAR stuff afterwards
-    // so far smoothing is only implemented for PLANAR
-    vsFrameCopy(&md->curr, frame, &md->fi);
-  } else {
-    // box-kernel smoothing (plain average of pixels), which is fine for us
-    boxblurPlanar(&md->curr, frame, &md->currtmp, &md->fi, md->conf.stepSize*1/*1.4*/,
-               BoxBlurNoColor);
-    // two times yields tent-kernel smoothing, which may be better, but I don't
-    //  think we need it
-    //boxblurPlanar(md->curr, md->curr, md->currtmp, &md->fi, md->stepSize*1,
-    // BoxBlurNoColor);
-  }
+	md->currorig = *frame;
+	// smoothen image to do better motion detection
+	//  (larger stepsize or eventually gradient descent (need higher resolution))
+	if (md->fi.pFormat > PF_PACKED) {
+		// we could calculate a grayscale version and use the PLANAR stuff afterwards
+		// so far smoothing is only implemented for PLANAR
+		vsFrameCopy(&md->curr, frame, &md->fi);
+	} else {
+		//=-- Copy frame into curr
+		vsFrameCopy(&md->curr, frame, &md->fi);
 
-  if (md->hasSeenOneFrame) {
-    LocalMotions motionscoarse;
-    LocalMotions motionsfine;
-    vs_vector_init(&motionsfine,0);
-    //    md->curr = frame;
-    if (md->fi.pFormat > PF_PACKED) {
-      motionscoarse = calcTransFields(md, &md->fieldscoarse,
-                                      calcFieldTransPacked, contrastSubImgPacked);
-    } else { // PLANAR
-      motionscoarse = calcTransFields(md, &md->fieldscoarse,
-                                      calcFieldTransPlanar, contrastSubImgPlanar);
-    }
-    int num_motions = vs_vector_size(&motionscoarse);
-    if (num_motions < 1) {
-      vs_log_warn(md->conf.modName, "too low contrast. \
-(no translations are detected in frame %i)\n", md->frameNum);
-    }else{
-      // calc transformation and perform another scan with small fields
-      VSTransform t = vsSimpleMotionsToTransform(md->fi, md->conf.modName, &motionscoarse);
-      md->fieldsfine.offset    = t;
-      md->fieldsfine.useOffset = 1;
-      LocalMotions motions2;
-      if (md->fi.pFormat > PF_PACKED) {
-        motions2 = calcTransFields(md, &md->fieldsfine,
-                                   calcFieldTransPacked, contrastSubImgPacked);
-      } else { // PLANAR
-        motions2 = calcTransFields(md, &md->fieldsfine,
-                                   calcFieldTransPlanar, contrastSubImgPlanar);
-      }
-      // through out those with bad match (worse than mean of coarse scan)
-      VSArray matchQualities1 = localmotionsGetMatch(&motionscoarse);
-      double meanMatch = cleanmean(matchQualities1.dat, matchQualities1.len, NULL, NULL);
-      motionsfine      = vs_vector_filter(&motions2, lm_match_better, &meanMatch);
-      if(0){
-        printf("\nMatches: mean:  %f | ", meanMatch);
-        vs_array_print(matchQualities1, stdout);
-        printf("\n         fine: ");
-        VSArray matchQualities2 = localmotionsGetMatch(&motions2);
-        vs_array_print(matchQualities2, stdout);
-        printf("\n");
-      }
-    }
-    if (md->conf.show) { // draw fields and transforms into frame.
-      int num_motions_fine = vs_vector_size(&motionsfine);
-      // this has to be done one after another to handle possible overlap
-      if (md->conf.show > 1) {
-        for (int i = 0; i < num_motions; i++)
-          drawFieldScanArea(md, LMGet(&motionscoarse,i), md->fieldscoarse.maxShift);
-      }
-      for (int i = 0; i < num_motions; i++)
-        drawField(md, LMGet(&motionscoarse,i), 1);
-      for (int i = 0; i < num_motions_fine; i++)
-        drawField(md, LMGet(&motionsfine,i), 0);
-      for (int i = 0; i < num_motions; i++)
-        drawFieldTrans(md, LMGet(&motionscoarse,i),180);
-      for (int i = 0; i < num_motions_fine; i++)
-        drawFieldTrans(md, LMGet(&motionsfine,i), 64);
-    }
-    *motions = vs_vector_concat(&motionscoarse,&motionsfine);
-    //*motions = motionscoarse;
-    //*motions = motionsfine;
-  } else {
-    vs_vector_init(motions,1); // dummy vector
-    md->hasSeenOneFrame = 1;
-  }
+//		boxblurPlanar(&md->curr, &md->curr, &md->currtmp, &md->fi, md->conf.stepSize * 2, BoxBlurNoColor);
+
+		//=-- Use derivative as exposure correction mechanism
+		calculateDerivativeImage(md->curr.data[0], md->curr.data[0], &md->currtmp, &md->fi, md->curr.linesize[0], md->curr.linesize[0]);
+
+		//=-- Smooth result for better matching
+		boxblurPlanar(&md->curr, &md->curr, &md->currtmp, &md->fi, md->conf.stepSize * 2, BoxBlurNoColor);
+//		boxblurPlanar(&md->curr, &md->curr, &md->currtmp, &md->fi, md->conf.stepSize * 2, BoxBlurNoColor);
+
+	}
+
+  //=-- TODO [CUSTOM&TEMP] See preprocessed frame in motion vector output
+	if (md->conf.show) {
+		vsFrameCopy(&md->currorig, &md->curr, &md->fi);
+	}
+
+	if (md->hasSeenOneFrame) {
+		LocalMotions motionscoarse;
+		LocalMotions motionsfine;
+		vs_vector_init(&motionsfine, 0);
+		//    md->curr = frame;
+		if (md->fi.pFormat > PF_PACKED) {
+			motionscoarse = calcTransFields(md, &md->fieldscoarse,
+					calcFieldTransPacked, contrastSubImgPacked);
+		} else { // PLANAR
+			motionscoarse = calcTransFields(md, &md->fieldscoarse,
+					calcFieldTransPlanar, contrastSubImgPlanar);
+		}
+		int num_motions = vs_vector_size(&motionscoarse);
+
+		if (num_motions < 1) {
+			vs_log_warn(md->conf.modName,
+					"too low contrast. \
+(no translations are detected in frame %i)\n",
+					md->frameNum);
+		} else {
+			// calc transformation and perform another scan with small fields
+			VSTransform t = vsSimpleMotionsToTransform(md->fi, md->conf.modName,
+					&motionscoarse);
+			md->fieldsfine.offset = t;
+			md->fieldsfine.useOffset = 1;
+			LocalMotions motions2;
+			if (md->fi.pFormat > PF_PACKED) {
+				motions2 = calcTransFields(md, &md->fieldsfine,
+						calcFieldTransPacked, contrastSubImgPacked);
+			} else { // PLANAR
+				motions2 = calcTransFields(md, &md->fieldsfine,
+						calcFieldTransPlanar, contrastSubImgPlanar);
+			}
+
+			motionsfine = motions2;
+
+
+			// throw out those with bad match (worse than mean of coarse scan)
+//			if (0) {
+//				printf("\nMatches: mean:  %f | ", meanMatch);
+//				vs_array_print(matchQualities1, stdout);
+//				printf("\n         fine: ");
+//				VSArray matchQualities2 = localmotionsGetMatch(&motions2);
+//				vs_array_print(matchQualities2, stdout);
+//				printf("\n");
+//			}
+
+			//=-- TODO [CUSTOM] Remove motions that stray too much from the mean motion
+			// TODO [High] This approach could fail for rotation
+
+			//=- Calculate combined motions average and standard deviation
+				VSArray matchQualities1 = localmotionsGetMatch(&motionscoarse);
+				double meanMatch = cleanmean(matchQualities1.dat,
+						matchQualities1.len, NULL, NULL);
+				motionsfine = vs_vector_filter(&motions2, lm_match_better,
+						&meanMatch);
+
+			LocalMotionsInfo motionsAvgAndDeviation;
+			if (num_motions < 10) {
+				LocalMotions combinedMotions = (LocalMotions) vs_vector_concat(&motionscoarse, &motionsfine);
+				motionsAvgAndDeviation = calculateMotionsAvgAndDeviation(&combinedMotions);
+			} else {
+
+				motionsAvgAndDeviation = calculateMotionsAvgAndDeviation(&motionscoarse);
+			}
+//
+//			//=- Cleanup coarse and fine motions
+			motionscoarse = cleanupMotions(&motionscoarse, &motionsAvgAndDeviation);
+			motionsfine = cleanupMotions(&motionsfine, &motionsAvgAndDeviation);
+
+		}
+
+		if (md->conf.show) { // draw fields and transforms into frame.
+			num_motions = vs_vector_size(&motionscoarse);
+			int num_motions_fine = vs_vector_size(&motionsfine);
+			// this has to be done one after another to handle possible overlap
+			if (md->conf.show > 1) {
+				for (int i = 0; i < num_motions; i++)
+					drawFieldScanArea(md, LMGet(&motionscoarse, i),
+							md->fieldscoarse.maxShift);
+			}
+			for (int i = 0; i < num_motions; i++) {
+				LocalMotion* currentMotion = LMGet(&motionscoarse, i);
+				drawField(md, currentMotion, 1);
+			}
+			for (int i = 0; i < num_motions_fine; i++) {
+				LocalMotion* currentMotion = LMGet(&motionsfine, i);
+				drawField(md, currentMotion, 0);
+			}
+			for (int i = 0; i < num_motions; i++) {
+				LocalMotion* currentMotion = LMGet(&motionscoarse, i);
+				drawFieldTrans(md, currentMotion, 180);
+			}
+			for (int i = 0; i < num_motions_fine; i++) {
+				LocalMotion* currentMotion = LMGet(&motionsfine, i);
+				drawFieldTrans(md, currentMotion, 64);
+			}
+		}
+
+		*motions = vs_vector_concat(&motionscoarse, &motionsfine);
+
+		//*motions = motionscoarse;
+		//*motions = motionsfine;
+	} else {
+		vs_vector_init(motions, 1); // dummy vector
+		md->hasSeenOneFrame = 1;
+	}
 
   // for tripod we keep a certain reference frame
   if(md->conf.virtualTripod < 1 || md->frameNum < md->conf.virtualTripod)
@@ -261,6 +321,87 @@ int vsMotionDetection(VSMotionDetect* md, LocalMotions* motions, VSFrame *frame)
   return VS_OK;
 }
 
+// TODO [CUSTOM] Cleanup motions based on average vector
+LocalMotionsInfo calculateMotionsAvgAndDeviation(LocalMotions* averageSource) {
+//	VSArray averageSourceQualities = localmotionsGetMatch(&averageSource);
+	int averageSourceMotionCount = vs_vector_size(averageSource);
+
+	LocalMotionsInfo avgAndStdDev;
+
+	//=- Calculate average motion
+	double averageMotionX = 0;
+	double averageMotionY = 0;
+	double totalQualityWeight = 0;
+
+//	fprintf(stderr,"Calculating average over %i motions\n", averageSourceMotionCount);
+	for (int i = 0; i < averageSourceMotionCount; i++) {
+		LocalMotion* currentMotion = LMGet(averageSource, i);
+		Vec currentVector = currentMotion->vector;
+
+		//=- Include quality as measure of how much the current motion should contribute to the average
+		double currentQuality = currentMotion->match;
+		double currentWeight = 1 / (currentQuality + 0.0001);
+		totalQualityWeight += currentWeight;
+
+//		fprintf(stderr,"Current vector [%i,%i] Q:%f \n", currentVector.x, currentVector.y, currentQuality);
+
+		averageMotionX += currentVector.x * currentWeight;
+		averageMotionY += currentVector.y * currentWeight;
+	}
+	averageMotionX = averageMotionX / totalQualityWeight;
+	averageMotionY = averageMotionY / totalQualityWeight;
+
+	avgAndStdDev.averageTranslationX = averageMotionX;
+	avgAndStdDev.averageTranslationY = averageMotionY;
+
+//	fprintf(stderr,"Average motion [%f,%f]\n", averageMotionX, averageMotionY);
+
+	//=- Calculate standard deviation
+	double standardDeviationX = 0;
+	double standardDeviationY = 0;
+	for (int i = 0; i < averageSourceMotionCount; i++) {
+		LocalMotion* currentMotion = LMGet(averageSource, i);
+		Vec currentVector = currentMotion->vector;
+
+		standardDeviationX += pow((double)currentVector.x - averageMotionX, 2);
+		standardDeviationY += pow((double)currentVector.y - averageMotionY, 2);
+	}
+
+	standardDeviationX = sqrt(standardDeviationX/averageSourceMotionCount);
+	standardDeviationY = sqrt(standardDeviationY/averageSourceMotionCount);
+//	fprintf(stderr,"Standard deviation [%f,%f]\n", standardDeviationX, standardDeviationY);
+
+	avgAndStdDev.stdDevX = standardDeviationX;
+	avgAndStdDev.stdDevY = standardDeviationY;
+
+	return avgAndStdDev;
+}
+
+
+// TODO [CUSTOM] Cleanup motions based on average vector
+LocalMotions cleanupMotions(LocalMotions* motions, LocalMotionsInfo* motionsInfo) {
+	int motionCount = vs_vector_size(motions);
+
+	//=- Actually remove straying motions
+	LocalMotions cleanedMotions;
+	vs_vector_init(&cleanedMotions,motionCount);
+
+	for (int i = 0; i < motionCount; i++) {
+		LocalMotion* currentMotion = LMGet(motions, i);
+		Vec currentVector = currentMotion->vector;
+
+		if (   abs((double)currentVector.x - motionsInfo->averageTranslationX) > motionsInfo->stdDevX/2
+			|| abs((double)currentVector.y - motionsInfo->averageTranslationY) > motionsInfo->stdDevY/2) {
+			//= Strays too much
+//			fprintf(stderr,"Throwing away vector [%i,%i]\n", currentVector.x, currentVector.y);
+		} else {
+//			fprintf(stderr,"Adding vector [%i,%i]\n", currentVector.x, currentVector.y);
+			vs_vector_append(&cleanedMotions, currentMotion);
+		}
+	}
+
+	return cleanedMotions;
+}
 
 /** initialise measurement fields on the frame.
     The size of the fields and the maxshift is used to
@@ -337,6 +478,8 @@ double contrastSubImgPacked(VSMotionDetect* md, const Field* field) {
 }
 
 /**
+ * TODO [Medium] Is the Michelson contrast the best choice, here? Why?
+ *
    calculates Michelson-contrast in the given small part of the given image
    to be more compatible with the absolute difference formula this is scaled by 0.1
 
@@ -369,6 +512,7 @@ double contrastSubImg(unsigned char* const I, const Field* field, int width,
 /* calculates the optimal transformation for one field in Planar frames
  * (only luminance)
  */
+// TODO [DEBUGGING] Do subimage matching
 LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
                                  const Field* field, int fieldnum) {
   int tx = 0;
@@ -381,6 +525,7 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
   int maxShift = fs->maxShift;
   Vec offset = { 0, 0};
   LocalMotion lm = null_localmotion();
+
   if(fs->useOffset){
     // Todo: we could put the preparedtransform into fs
     PreparedTransform pt = prepare_transform(&fs->offset, &md->fi);
@@ -399,15 +544,27 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
 
 #ifdef STABVERBOSE
   // printf("%i %i %f\n", md->frameNum, fieldnum, contr);
-  FILE *f = NULL;
+  FILE *fieldLM = NULL;
   char buffer[32];
   vs_snprintf(buffer, sizeof(buffer), "f%04i_%02i.dat", md->frameNum, fieldnum);
-  f = fopen(buffer, "w");
-  fprintf(f, "# splot \"%s\"\n", buffer);
+  fieldLM = fopen(buffer, "w");
+  fprintf(fieldLM, "# splot \"%s\"\n", buffer);
 #endif
 
 #ifdef USE_SPIRAL_FIELD_CALC
   unsigned int minerror = UINT_MAX;
+
+  const int MIN_ERROR_COUNT = 5;
+  const unsigned int NO_ERROR = -1;
+  unsigned int previousMinError[MIN_ERROR_COUNT];
+  int previousMinErrorTX[MIN_ERROR_COUNT];
+  int previousMinErrorTY[MIN_ERROR_COUNT];
+  for (i = 0; i < MIN_ERROR_COUNT; i++) {
+	  previousMinError[i] = NO_ERROR;
+	  previousMinErrorTX[i] = 0;
+	  previousMinErrorTY[i] = 0;
+  }
+  int previousMinErrorIndex = 0;
 
   // check all positions by outgoing spiral
   i = 0; j = 0;
@@ -415,14 +572,39 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
   int step = 0;
   int dir = 0;
   while (j >= -maxShift && j <= maxShift && i >= -maxShift && i <= maxShift) {
+	  // TODO [CLEANUP]
+	//unsigned char* const I1, unsigned char* const I2,
+	// const Field* field,
+	// int width1 = linesize_c,
+	// int width2 = linesize_p,
+	// int height = fi_height,
+	// int bytesPerPixel = 1,
+	// int d_x = i + offset.x,
+	// int d_y = j +offset.y,
+	// unsigned int threshold = minerror
+
     unsigned int error = compareSubImg(Y_c, Y_p, field, linesize_c, linesize_p,
                                        md->fi.height, 1, i + offset.x, j + offset.y,
                                        minerror);
 
+       //= TODO [CLEANUP]
+//	  if (md->frameNum == 5) {
+//		  fprintf(stderr, "{%i}-[%i,%i]-(%i)\n", fieldnum, i, j, error);
+//	  }
+
     if (error < minerror) {
+      previousMinError[previousMinErrorIndex] = minerror;
+	  previousMinErrorTX[previousMinErrorIndex] = i;
+	  previousMinErrorTY[previousMinErrorIndex] = j;
+      previousMinErrorIndex = (previousMinErrorIndex + 1)%MIN_ERROR_COUNT;
       minerror = error;
       tx = i;
       ty = j;
+    }
+
+    //=-- If the error is really low, we can stop early
+    if (minerror < 20) {
+    	break;
     }
 
     //spiral indexing...
@@ -474,12 +656,14 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
       unsigned int error = compareSubImg(Y_c, Y_p, field, linesize_c, linesize_p,
                                          md->fi.height, 1, i+offset.x, j+offset.y, minerror);
       if (error < minerror) {
+	    previousMinError[previousMinErrorIndex] = minerror;
+	    previousMinErrorIndex = (previousMinErrorIndex + 1)%minErrorCount;
         minerror = error;
         tx = i;
         ty = j;
       }
 #ifdef STABVERBOSE
-      fprintf(f, "%i %i %f\n", i, j, error);
+      fprintf(fieldLM, "%i %i %f\n", i, j, error);
 #endif
     }
   }
@@ -493,14 +677,24 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
     int r = stepSize - newStepSize;
     for (i = txc - r; i <= txc + r; i += newStepSize) {
       for (j = tyc - r; j <= tyc + r; j += newStepSize) {
-        if (i == txc && j == tyc)
+        if (i == txc && j == tyc) {
           continue; //no need to check this since already done
+        }
         unsigned int error = compareSubImg(Y_c, Y_p, field, linesize_c, linesize_p,
                                            md->fi.height, 1, i+offset.x, j+offset.y, minerror);
 #ifdef STABVERBOSE
-        fprintf(f, "%i %i %f\n", i, j, error);
+        fprintf(fieldLM, "%i %i %f\n", i, j, error);
 #endif
+
+        //= TODO [CLEANUP]
+//  	  if (md->frameNum == 5) {
+//  		  fprintf(stderr, "{%i}-[%i,%i]-(%i)\n", fieldnum, i, j, error);
+//  	  }
         if (error < minerror) {
+		  previousMinError[previousMinErrorIndex] = minerror;
+		  previousMinErrorTX[previousMinErrorIndex] = i;
+		  previousMinErrorTY[previousMinErrorIndex] = j;
+		  previousMinErrorIndex = (previousMinErrorIndex + 1)%MIN_ERROR_COUNT;
           minerror = error;
           tx = i;
           ty = j;
@@ -510,7 +704,7 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
     stepSize /= 2;
   }
 #ifdef STABVERBOSE
-  fclose(f);
+  fclose(fieldLM);
   vs_log_msg(md->modName, "Minerror: %f\n", minerror);
 #endif
 
@@ -522,10 +716,54 @@ LocalMotion calcFieldTransPlanar(VSMotionDetect* md, VSMotionDetectFields* fs,
     lm.match =-1.0; // to be kicked out
     return lm;
   }
-  lm.f = *field;
-  lm.v.x = tx + offset.x;
-  lm.v.y = ty + offset.y;
-  lm.match = ((double) minerror)/(field->size*field->size);
+  lm.fieldLM = *field;
+  lm.vector.x = tx + offset.x;
+  lm.vector.y = ty + offset.y;
+//  if (previousMinerror == -1) {
+//	  lm.match = 255 * ((10000 - ((double)minerror / (field->size * field->size)))/10000);
+//  } else {
+//	  lm.match = ((double) previousMinerror - minerror) / (minerror/100);
+//  }
+//  lm.match = ((double)minerror / (field->size * field->size));
+
+//  if (minerror > 10000) {
+//	  lm.match = 100;
+//  } else {
+	  double uniqueness = 1;
+	  double errorSameness;
+	  double vectorDiff;
+//	  int diff = 1;
+	  unsigned int currentPreviousError;
+	  int currentPreviousErrorTX;
+	  int currentPreviousErrorTY;
+	  int actualMinErrorCount = 0;
+
+	  //=-- Determine actual stored error counts
+	  for (int i = 0; i < MIN_ERROR_COUNT; i++) {
+		  currentPreviousError = previousMinError[i];
+		  actualMinErrorCount++;
+	  }
+
+	  //=-- Calculate uniqueness of match
+	  for (int i = 0; i < MIN_ERROR_COUNT; i++) {
+		  currentPreviousError = previousMinError[i];
+		  currentPreviousErrorTX = previousMinErrorTX[i];
+		  currentPreviousErrorTY = previousMinErrorTY[i];
+		  if (currentPreviousError != NO_ERROR) {
+			  errorSameness = (double) minerror / currentPreviousError;
+			  vectorDiff = sqrt(pow(tx - currentPreviousErrorTX, 2) + pow(ty - currentPreviousErrorTY, 2))/ linesize_c;
+			  uniqueness -= (vectorDiff * 100 * errorSameness) / actualMinErrorCount;
+		  }
+	  }
+	  if (uniqueness < 0) {
+		  uniqueness = 0.01;
+	  }
+
+	  lm.match = ((double)minerror/(field->size*field->size));
+	  lm.match += lm.match / (uniqueness/2);
+//  }
+
+//  fprintf(stderr, "[%i->%i] Un: %f Min: %i Match: %f\n", md->frameNum ,fieldnum, uniqueness, minerror, lm.match);
   return lm;
 }
 
@@ -601,9 +839,9 @@ LocalMotion calcFieldTransPacked(VSMotionDetect* md, VSMotionDetectFields* fs,
     lm.match = -1;
     return lm;
   }
-  lm.f = *field;
-  lm.v.x = tx + offset.x;
-  lm.v.y = ty + offset.y;
+  lm.fieldLM = *field;
+  lm.vector.x = tx + offset.x;
+  lm.vector.y = ty + offset.y;
   lm.match = ((double)minerror)/(field->size*field->size);
   return lm;
 }
@@ -611,84 +849,131 @@ LocalMotion calcFieldTransPacked(VSMotionDetect* md, VSMotionDetectFields* fs,
 /* compares contrast_idx structures respect to the contrast
    (for sort function)
 */
-int cmp_contrast_idx(const void *ci1, const void* ci2) {
-  double a = ((contrast_idx*) ci1)->contrast;
-  double b = ((contrast_idx*) ci2)->contrast;
+int contrastComparator(const void *ci1, const void* ci2) {
+  double a = ((ContrastContainer*) ci1)->contrast;
+  double b = ((ContrastContainer*) ci2)->contrast;
   return a < b ? 1 : (a > b ? -1 : 0);
 }
 
-/* select only the best 'maxfields' fields
-   first calc contrasts then select from each part of the
-   frame some fields
-   We may simplify here by using random. People want high quality, so typically we use all.
-*/
-VSVector selectfields(VSMotionDetect* md, VSMotionDetectFields* fs,
-                      contrastSubImgFunc contrastfunc) {
-  int i, j;
-  VSVector goodflds;
-  contrast_idx *ci =
-    (contrast_idx*) vs_malloc(sizeof(contrast_idx) * fs->fieldNum);
-  vs_vector_init(&goodflds, fs->fieldNum);
+/* Select only the best 'maxfields' fields. Best is defined here as fields with the highest contrast.
+ *  1. Calculate contrasts for all fields
+ *  2. Select {fs->maxFields} fields from each segment of the frame
+ *
+ *  TODO [Low] Is the following comment still relevant?
+ *  We may simplify here by using random. People want high quality, so typically we use all.
+ */
+// TODO [DEBUGGING] Select fields
+VSVector selectFields(VSMotionDetect* md, VSMotionDetectFields* fieldsContainer,
+		contrastSubImgFunc contrastfunc) {
 
-  // we split all fields into row+1 segments and take from each segment
-  // the best fields
-  int numsegms = (fs->fieldRows + 1);
-  int segmlen = fs->fieldNum / (fs->fieldRows + 1) + 1;
-  // split the frame list into rows+1 segments
-  contrast_idx *ci_segms =
-    (contrast_idx*) vs_malloc(sizeof(contrast_idx) * fs->fieldNum);
-  int remaining = 0;
-  // calculate contrast for each field
-  // #pragma omp parallel for shared(ci,md) no speedup because to short
-  for (i = 0; i < fs->fieldNum; i++) {
-    ci[i].contrast = contrastfunc(md, &fs->fields[i]);
-    ci[i].index = i;
-    if (ci[i].contrast < fs->contrastThreshold)
-      ci[i].contrast = 0;
-    // else printf("%i %lf\n", ci[i].index, ci[i].contrast);
-  }
+	//=-- Declare and initialize variables
+	VSVector selectedFields;
+	vs_vector_init(&selectedFields, fieldsContainer->fieldNum);
 
-  memcpy(ci_segms, ci, sizeof(contrast_idx) * fs->fieldNum);
-  // get best fields from each segment
-  for (i = 0; i < numsegms; i++) {
-    int startindex = segmlen * i;
-    int endindex = segmlen * (i + 1);
-    endindex = endindex > fs->fieldNum ? fs->fieldNum : endindex;
-    //printf("Segment: %i: %i-%i\n", i, startindex, endindex);
+	//=-- Create containers for the contrast values. The second one is used in a slightly convoluted method of sorting and selecting fields,
+	ContrastContainer *contrastByField = (ContrastContainer*) vs_malloc(
+			sizeof(ContrastContainer) * fieldsContainer->fieldNum);
+	ContrastContainer *contrastByFieldSortable = (ContrastContainer*) vs_malloc(
+			sizeof(ContrastContainer) * fieldsContainer->fieldNum);
 
-    // sort within segment
-    qsort(ci_segms + startindex, endindex - startindex,
-          sizeof(contrast_idx), cmp_contrast_idx);
-    // take maxfields/numsegms
-    for (j = 0; j < fs->maxFields / numsegms; j++) {
-      if (startindex + j >= endindex)
-        continue;
-      // printf("%i %lf\n", ci_segms[startindex+j].index,
-      //                    ci_segms[startindex+j].contrast);
-      if (ci_segms[startindex + j].contrast > 0) {
-        vs_vector_append_dup(&goodflds, &ci[ci_segms[startindex+j].index],
-                             sizeof(contrast_idx));
-        // don't consider them in the later selection process
-        ci_segms[startindex + j].contrast = 0;
-      }
-    }
-  }
-  // check whether enough fields are selected
-  // printf("Phase2: %i\n", vs_list_size(goodflds));
-  remaining = fs->maxFields - vs_vector_size(&goodflds);
-  if (remaining > 0) {
-    // take the remaining from the leftovers
-    qsort(ci_segms, fs->fieldNum, sizeof(contrast_idx), cmp_contrast_idx);
-    for (j = 0; j < remaining; j++) {
-      if (ci_segms[j].contrast > 0) {
-        vs_vector_append_dup(&goodflds, &ci_segms[j], sizeof(contrast_idx));
-      }
-    }
-  }
-  // printf("Ende: %i\n", vs_list_size(goodflds));
-  vs_free(ci);
-  vs_free(ci_segms);
-  return goodflds;
+	//=-- Determine number of segments, segment length and how many fields we initially wish to select per segment
+	int numberOfSegments = (fieldsContainer->fieldRows + 1);
+	int fieldsPerSegment = fieldsContainer->fieldNum
+			/ (fieldsContainer->fieldRows + 1) + 1;
+	int maxFieldsPerSegment = fieldsContainer->maxFields / numberOfSegments;
+
+	//=-- Calculate contrast for each field
+	// #pragma omp parallel for shared(ci,md) no speedup because to short
+	int i;
+	for (i = 0; i < fieldsContainer->fieldNum; i++) {
+		contrastByField[i].contrast = contrastfunc(md,
+				&fieldsContainer->fields[i]);
+		contrastByField[i].index = i;
+
+//		fprintf(stderr, "%i %lf\n", contrastByField[i].index, contrastByField[i].contrast);
+		if (contrastByField[i].contrast < fieldsContainer->contrastThreshold) {
+			contrastByField[i].contrast = 0;
+		}
+	}
+
+	//=-- Duplicate contrasts
+	memcpy(contrastByFieldSortable, contrastByField,
+			sizeof(ContrastContainer) * fieldsContainer->fieldNum);
+
+	//=-- For each segment, retrieve the fields with the best contrast, up to maxFieldsPerSegment and fieldsContainer->maxFields total
+	int relativeFieldIndex;
+	int segmentNumber;
+	for (segmentNumber = 0; segmentNumber < numberOfSegments; segmentNumber++) {
+
+		//=- Process only fields of this segment
+		int fieldStartIndex = fieldsPerSegment * segmentNumber;
+		int fieldEndindex = fieldStartIndex + fieldsPerSegment - 1;
+		//printf("Segment: %i: %i-%i\n", i, startIndex, endIndex);
+
+		//=- Limit end index
+		fieldEndindex =
+				fieldEndindex > fieldsContainer->fieldNum-1 ?
+						fieldsContainer->fieldNum-1 : fieldEndindex;
+
+		//=- Sort by contrast within segment
+		qsort(contrastByFieldSortable + fieldStartIndex,
+				fieldEndindex - fieldStartIndex, sizeof(ContrastContainer),
+				contrastComparator);
+
+		//=- Start selecting best fields
+		int selectedFieldCount = 0;
+		int absoluteFieldIndex = fieldStartIndex;
+		relativeFieldIndex = 0;
+
+		while (selectedFieldCount < maxFieldsPerSegment
+				&& absoluteFieldIndex < fieldEndindex) {
+
+			absoluteFieldIndex = fieldStartIndex + relativeFieldIndex;
+
+			//		  fprintf(stderr, "Processing absolute index %i of %i", absoluteFieldIndex, fieldsContainer->fieldNum);
+//			       fprintf(stderr, "%i %lf\n", contrastByFieldSortable[absoluteFieldIndex].index,
+//			                          contrastByFieldSortable[absoluteFieldIndex].contrast);
+			if (contrastByFieldSortable[absoluteFieldIndex].contrast > 0) {
+				ContrastContainer* currentContrastContainer =
+						&contrastByField[contrastByFieldSortable[absoluteFieldIndex].index];
+				vs_vector_append_dup(&selectedFields, currentContrastContainer,
+						sizeof(ContrastContainer));
+
+				//= Make field as not eligible for next phase
+				contrastByFieldSortable[absoluteFieldIndex].contrast = 0;
+
+				selectedFieldCount++;
+			}
+
+			relativeFieldIndex++;
+		}
+	}
+
+	//=-- Check whether enough fields are selected
+	// printf("Phase2: %i\n", vs_list_size(selectedFields));
+	int remaining = fieldsContainer->maxFields
+			- vs_vector_size(&selectedFields);
+	int j;
+	if (remaining > 0) {
+		//=- Not enough fields were selected, so select the fields with the best contrast over all segments
+		qsort(contrastByFieldSortable, fieldsContainer->fieldNum,
+				sizeof(ContrastContainer), contrastComparator);
+		for (j = 0; j < remaining; j++) {
+			if (contrastByFieldSortable[j].contrast > 0) {
+				ContrastContainer* currentContrastContainer =
+						&contrastByFieldSortable[j];
+				vs_vector_append_dup(&selectedFields, currentContrastContainer,
+						sizeof(ContrastContainer));
+			}
+		}
+	}
+
+	//=-- Cleanup and return
+	// printf("Ende: %i\n", vs_list_size(selectedFields));
+	vs_free(contrastByField);
+	vs_free(contrastByFieldSortable);
+
+	return selectedFields;
 }
 
 /* tries to register current frame onto previous frame.
@@ -704,7 +989,6 @@ LocalMotions calcTransFields(VSMotionDetect* md,
                              contrastSubImgFunc contrastfunc) {
   LocalMotions localmotions;
   vs_vector_init(&localmotions,fields->maxFields);
-
 #ifdef STABVERBOSE
   FILE *file = NULL;
   char buffer[32];
@@ -713,20 +997,20 @@ LocalMotions calcTransFields(VSMotionDetect* md,
   fprintf(file, "# plot \"%s\" w l, \"\" every 2:1:0\n", buffer);
 #endif
 
-  VSVector goodflds = selectfields(md, fields, contrastfunc);
+  VSVector goodflds = selectFields(md, fields, contrastfunc);
   // use all "good" fields and calculate optimal match to previous frame
 #ifdef USE_OMP
 #pragma omp parallel for shared(goodflds, md, localmotions, fs) // does not bring speedup
 #endif
   for(int index=0; index < vs_vector_size(&goodflds); index++){
-    int i = ((contrast_idx*)vs_vector_get(&goodflds,index))->index;
+    int i = ((ContrastContainer*)vs_vector_get(&goodflds,index))->index;
     LocalMotion m;
     m = fieldfunc(md, fields, &fields->fields[i], i); // e.g. calcFieldTransPlanar
     if(m.match >= 0){
-      m.contrast = ((contrast_idx*)vs_vector_get(&goodflds,index))->contrast;
+      m.contrast = ((ContrastContainer*)vs_vector_get(&goodflds,index))->contrast;
 #ifdef STABVERBOSE
-      fprintf(file, "%i %i\n%f %f %f %f\n \n\n", m.f.x, m.f.y,
-              m.f.x + m.v.x, m.f.y + m.v.y, m.match, m.contrast);
+      fprintf(file, "%i %i\n%f %f %f %f\n \n\n", m.fieldLM.x, m.fieldLM.y,
+              m.fieldLM.x + m.vector.x, m.fieldLM.y + m.vector.y, m.match, m.contrast);
 #endif
       vs_vector_append_dup(&localmotions, &m, sizeof(LocalMotion));
     }
@@ -747,33 +1031,36 @@ LocalMotions calcTransFields(VSMotionDetect* md,
 void drawFieldScanArea(VSMotionDetect* md, const LocalMotion* lm, int maxShift) {
   if (md->fi.pFormat > PF_PACKED)
     return;
-  drawRectangle(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1, lm->f.x, lm->f.y,
-                lm->f.size + 2 * maxShift, lm->f.size + 2 * maxShift, 80);
+  drawRectangle(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1, lm->fieldLM.x, lm->fieldLM.y,
+                lm->fieldLM.size + 2 * maxShift, lm->fieldLM.size + 2 * maxShift, 80);
 }
 
 /** draws the field */
 void drawField(VSMotionDetect* md, const LocalMotion* lm, short box) {
   if (md->fi.pFormat > PF_PACKED)
     return;
-  if(box)
+//  fprintf(stderr, "Match %f\n", lm->match);
+  if(box) {
     drawBox(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1,
-            lm->f.x, lm->f.y, lm->f.size, lm->f.size, /*lm->match >100 ? 100 :*/ 40);
-  else
+            lm->fieldLM.x, lm->fieldLM.y, lm->fieldLM.size, lm->fieldLM.size, VS_MIN(255,lm->match*30) /*lm->match >100 ? 100 : 40 */);
+  }
+  else {
     drawRectangle(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1,
-                  lm->f.x, lm->f.y, lm->f.size, lm->f.size, /*lm->match >100 ? 100 :*/ 40);
+                  lm->fieldLM.x, lm->fieldLM.y, lm->fieldLM.size, lm->fieldLM.size, VS_MIN(255,lm->match*30) /*lm->match >100 ? 100 : 40 */);
+  }
 }
 
 /** draws the transform data of this field */
-void drawFieldTrans(VSMotionDetect* md, const LocalMotion* lm, int color) {
-  if (md->fi.pFormat > PF_PACKED)
+void drawFieldTrans(VSMotionDetect* motionDetect, const LocalMotion* localMotion, int color) {
+  if (motionDetect->fi.pFormat > PF_PACKED)
     return;
-  Vec end = add_vec(field_to_vec(lm->f),lm->v);
-  drawBox(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1,
-          lm->f.x, lm->f.y, 5, 5, 0); // draw center
-  drawBox(md->currorig.data[0], md->currorig.linesize[0], md->fi.height, 1,
-          lm->f.x + lm->v.x, lm->f.y + lm->v.y, 5, 5, 250); // draw translation
-  drawLine(md->currorig.data[0], md->currorig.linesize[0],  md->fi.height, 1,
-           (Vec*)&lm->f, &end, 3, color);
+  Vec end = sub_vec(field_to_vec(localMotion->fieldLM),localMotion->vector);
+  drawBox(motionDetect->currorig.data[0], motionDetect->currorig.linesize[0], motionDetect->fi.height, 1,
+          localMotion->fieldLM.x, localMotion->fieldLM.y, 5, 5, 0); // draw center
+  drawBox(motionDetect->currorig.data[0], motionDetect->currorig.linesize[0], motionDetect->fi.height, 1,
+          localMotion->fieldLM.x - localMotion->vector.x, localMotion->fieldLM.y - localMotion->vector.y, 5, 5, 250); // draw translation
+  drawLine(motionDetect->currorig.data[0], motionDetect->currorig.linesize[0],  motionDetect->fi.height, 1,
+           (Vec*)&localMotion->fieldLM, &end, 3, color);
 
 }
 
@@ -871,18 +1158,26 @@ unsigned int compareSubImg_thr(unsigned char* const I1, unsigned char* const I2,
                                const Field* field, int width1, int width2, int height,
            int bytesPerPixel, int d_x, int d_y,
            unsigned int threshold) {
+
   int k, j;
   unsigned char* p1 = NULL;
   unsigned char* p2 = NULL;
   int s2 = field->size / 2;
   unsigned int sum = 0;
 
-  p1 = I1 + ((field->x - s2) + (field->y - s2) * width1) * bytesPerPixel;
-  p2 = I2 + ((field->x - s2 + d_x) + (field->y - s2 + d_y) * width2)
-    * bytesPerPixel;
+  int baseX = field->x - s2;
+  int baseY = field->y - s2;
+
+  p1 = I1 + (baseX + baseY * width1) * bytesPerPixel;
+  p2 = I2 + ((baseX + d_x) + (baseY + d_y) * width2) * bytesPerPixel;
   for (j = 0; j < field->size; j++) {
-    for (k = 0; k < field->size * bytesPerPixel; k++) {
-      sum += abs((int) *p1 - (int) *p2);
+    for (k = 0; k < (field->size * bytesPerPixel)-1; k++) {
+
+      int p1Value = (int) *p1;
+      int p2Value = (int) *p2;
+
+      sum += abs(p1Value - p2Value);
+
       p1++;
       p2++;
     }
@@ -892,6 +1187,134 @@ unsigned int compareSubImg_thr(unsigned char* const I1, unsigned char* const I2,
     p2 += (width2 - field->size) * bytesPerPixel;
   }
   return sum;
+}
+
+void initContrastLookup() {
+	if (contrastLookupInitialized == 0) {
+		double newValue = 0;
+		double c = (100.0 + contrast) / 100.0;
+		c *= c;
+
+		for (int i = 0; i < 256; i++) {
+			newValue = (double) i;
+			newValue /= 255.0;
+			newValue -= 0.5;
+			newValue *= c;
+			newValue += 0.5;
+			newValue *= 255;
+
+			if (newValue < 0)
+				newValue = 0;
+			if (newValue > 255)
+				newValue = 255;
+			contrastLookup[i] = (int) newValue;
+		}
+	}
+}
+
+void initDerivativeKernel() {
+	if (derivativeKernelInitialized == 0) {
+		// Kernel looks something like this:
+		// [ 0 , 3 , 2 , 1]
+		// [ 3 , 2 , 1 , 0]
+		// [ 2 , 1 , 0 , 0]
+		// [ 1 , 0 , 0 , 0]
+
+		float rowValue;
+		float value;
+		float total = 0;
+		for (int i = 0; i < derivativeKernelSize; i++) {
+			rowValue = derivativeKernelSize - i;
+			for (int j = 0; j < derivativeKernelSize; j++) {
+				value = VS_MAX(0, rowValue - j);
+				derivativeKernel[i][j] = value;
+				total += value;
+			}
+		}
+		derivativeKernel[0][0] = 0;
+
+		//=-- Normalize kernel
+		for (int i = 0; i < derivativeKernelSize; i++) {
+			for (int j = 0; j < derivativeKernelSize; j++) {
+				derivativeKernel[i][j] = derivativeKernel[i][j] / total;
+			}
+		}
+	}
+}
+
+// TODO [CUSTOM] Derivative
+void calculateDerivativeImage(unsigned char* dest, const unsigned char* src,
+		VSFrame* buffer, const VSFrameInfo* fi, int destFrameWidth,
+		int srcFrameWidth) {
+
+	//=-- Declare and init some variables
+	int i, j, k, l;
+	double accumulator;
+	const unsigned char *sourcePixelPointer;
+	unsigned char *destPixelPointer;
+	int targetPixelValue;
+	int localbuffer = 0;
+
+	//=-- Create buffer if necessary
+	VSFrame buf;
+	if (buffer == 0) {
+		vsFrameAllocate(&buf, fi);
+		localbuffer = 1;
+	} else {
+		buf = *buffer;
+	}
+
+	//=-- Generate contrast lookup table
+	initContrastLookup();
+
+	//=-- Init kernel
+	initDerivativeKernel();
+
+	//=-- Calculate derivative image and store it in dest
+	float kernelWeight;
+	for (k = 0; k < fi->height - derivativeKernelSize; k++) {
+		for (l = 0; l < fi->width - derivativeKernelSize; l++) {
+			accumulator = 0;
+			int offset = k * srcFrameWidth + l;
+			sourcePixelPointer = src + offset;
+			destPixelPointer = dest + offset;
+			unsigned char sourceValue = (*sourcePixelPointer);
+
+			//=-- Process comparison pixels
+			for (i = 0; i < derivativeKernelSize; i++) {
+				for (j = 0; j < derivativeKernelSize; j++) {
+					kernelWeight = derivativeKernel[i][j];
+					if (kernelWeight != 0) {
+						int kernelOffset = i * srcFrameWidth + j;
+						const unsigned char* comparisonPixelPointer =
+								sourcePixelPointer + kernelOffset;
+						unsigned char comparisonValue =
+								(*comparisonPixelPointer);
+						int delta = (sourceValue - comparisonValue);
+						accumulator += kernelWeight * delta;
+					}
+				}
+			}
+
+			//=-- Shift value to fit in 0-255 range
+			accumulator = accumulator / 2 + 128;
+//			fprintf(stderr, "Acc: %f\n", accumulator);
+
+			targetPixelValue = (int) accumulator;
+
+			//=-- Apply contrast
+			targetPixelValue = contrastLookup[targetPixelValue];
+
+			//=-- Write value
+			(*destPixelPointer) = targetPixelValue;
+
+		}
+	}
+
+	//=-- Clean buffer if local
+	if (localbuffer == 1) {
+		vsFrameFree(&buf);
+	}
 }
 
 

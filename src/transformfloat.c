@@ -217,15 +217,15 @@ int _FLT(transformPacked)(VSTransformData* td, VSTransform t)
    */
   int channels = td->fiSrc.bytesPerPixel;
   /* All channels */
-  if (fabs(t.alpha) > 0.1*M_PI/180.0) { // 0.1 deg
+  if (fabs(t.rotate) > 0.1*M_PI/180.0) { // 0.1 deg
     for (x = 0; x < td->fiDest.width; x++) {
       for (y = 0; y < td->fiDest.height; y++) {
         float x_d1 = (x - c_d_x);
         float y_d1 = (y - c_d_y);
-        float x_s  =  cos(-t.alpha) * x_d1
-          + sin(-t.alpha) * y_d1 + c_s_x -t.x;
-        float y_s  = -sin(-t.alpha) * x_d1
-          + cos(-t.alpha) * y_d1 + c_s_y -t.y;
+        float x_s  =  cos(-t.rotate) * x_d1
+          + sin(-t.rotate) * y_d1 + c_s_x -t.x;
+        float y_s  = -sin(-t.rotate) * x_d1
+          + cos(-t.rotate) * y_d1 + c_s_y -t.y;
         for (z = 0; z < channels; z++) { // iterate over colors
           uint8_t *dest = &D_2[x + y * td->destbuf.linesize[0]+z];
           _FLT(interpolateN)(dest, x_s, y_s, D_1, td->src.linesize[0],
@@ -274,7 +274,7 @@ int _FLT(transformPlanar)(VSTransformData* td, VSTransform t)
   uint8_t *dat_1, *dat_2;
   char crop = td->conf.crop;
 
-  if (t.alpha==0 && t.x==0 && t.y==0 && t.zoom == 0){
+  if (t.rotate==0 && t.x==0 && t.y==0 && t.zoom == 0){
     if(vsFramesEqual(&td->src,&td->destbuf))
       return VS_OK; // noop
     else {
@@ -296,8 +296,8 @@ int _FLT(transformPlanar)(VSTransformData* td, VSTransform t)
     uint8_t black = plane==0 ? 0 : 0x80;
 
     float z = 1.0-t.zoom/100;
-    float zcos_a = z*cos(-t.alpha); // scaled cos
-    float zsin_a = z*sin(-t.alpha); // scaled sin
+    float zcos_a = z*cos(-t.rotate); // scaled cos
+    float zsin_a = z*sin(-t.rotate); // scaled sin
     float tx = t.x / (float)(1 << wsub);
     float ty = t.y / (float)(1 << hsub);
 

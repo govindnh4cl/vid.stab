@@ -285,8 +285,8 @@ int transformPacked(VSTransformData* td, VSTransform t)
    *      p_s = M^{-1}(p_d - c_d - t) + c_s
    */
   float z     = 1.0-t.zoom/100.0;
-  fp16 zcos_a = fToFp16(z*cos(-t.alpha)); // scaled cos
-  fp16 zsin_a = fToFp16(z*sin(-t.alpha)); // scaled sin
+  fp16 zcos_a = fToFp16(z*cos(-t.rotate)); // scaled cos
+  fp16 zsin_a = fToFp16(z*sin(-t.rotate)); // scaled sin
   fp16  c_tx    = c_s_x - fToFp16(t.x);
   fp16  c_ty    = c_s_y - fToFp16(t.y);
   int channels = td->fiSrc.bytesPerPixel;
@@ -329,7 +329,7 @@ int transformPlanar(VSTransformData* td, VSTransform t)
   int32_t x = 0, y = 0;
   uint8_t *dat_1, *dat_2;
 
-  if (t.alpha==0 && t.x==0 && t.y==0 && t.zoom == 0){
+  if (t.rotate==0 && t.x==0 && t.y==0 && t.zoom == 0){
     if(vsFramesEqual(&td->src,&td->destbuf))
       return VS_OK; // noop
     else {
@@ -356,8 +356,8 @@ int transformPlanar(VSTransformData* td, VSTransform t)
     int32_t c_d_y = dh / 2;
 
     float z     = 1.0-t.zoom/100.0;
-    fp16 zcos_a = fToFp16(z*cos(-t.alpha)); // scaled cos
-    fp16 zsin_a = fToFp16(z*sin(-t.alpha)); // scaled sin
+    fp16 zcos_a = fToFp16(z*cos(-t.rotate)); // scaled cos
+    fp16 zsin_a = fToFp16(z*sin(-t.rotate)); // scaled sin
     fp16  c_tx    = c_s_x - (fToFp16(t.x) >> wsub);
     fp16  c_ty    = c_s_y - (fToFp16(t.y) >> hsub);
 
